@@ -1,0 +1,148 @@
+#!/usr/bin/env ruby
+#
+# Copyright (C) 2018  Kouhei Sutou <kou@clear-code.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# Some codes in this program are learned from gsuica:
+#
+#   http://hito.music.coocan.jp/pasori/gsuica.html
+#
+# Here is the license of gsuica:
+#
+#   Copyright (C) 2005-2006, Hiroyuki Ito. ZXB01226@nifty.com
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; either version 2 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful, but
+#   WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#   General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
+#   USA.
+
+require "optparse"
+
+require "pasori"
+
+class SuicaTravelingExpenseReporter
+  class RawData
+    attr_accessor :idm
+    attr_reader :in_out
+    attr_reader :history
+    def initialize
+      @idm = nil
+      @in_out = []
+      @history = []
+    end
+  end
+
+  def initialize
+    @raw_data = RawData.new
+    @raw_data_output_path = nil
+    @raw_data_input_path = nil
+  end
+
+  def run(argv)
+    parser = OptionParser.new
+    parser.on("--output-raw-data=PATH",
+              "Output raw data to PATH") do |path|
+      @raw_data_output_path = path
+    end
+    parser.on("--input-raw-data=PATH",
+              "Read raw data from PATH") do |path|
+      @raw_data_input_path = path
+    end
+    parser.parse!(argv)
+
+    report
+  end
+
+  def report
+    raw_data = read_raw_data
+    raw_data.in_out.each do |in_out|
+      p [:in_out, in_out, parse_in_out(in_out)]
+    end
+    raw_data.history.each do |history|
+      p [:history, history, parse_history(history)]
+    end
+
+    true
+  end
+
+  private
+  def read_raw_data
+    if @raw_data_input_path.nil?
+      Pasori.open do |pasori|
+        felica = pasori.felica_polling(Felica::POLLING_SUICA)
+        if felica.nil?
+          raise "No Suica found."
+        end
+
+        @raw_data.idm = felica.idm
+
+        felica.foreach(Felica::SERVICE_SUICA_IN_OUT) do |data|
+          @raw_data.in_out << data
+        end
+
+        felica.foreach(Felica::SERVICE_SUICA_HISTORY) do |data|
+          @raw_data.history << data
+        end
+
+        save_raw_data
+      end
+    else
+      File.open(@raw_data_input_path, "rb") do |file|
+        @raw_data = Marshal.load(file)
+      end
+    end
+
+    @raw_data
+  end
+
+  def save_raw_data
+    return if @raw_data_output_path.nil?
+
+    File.open(@raw_data_output_path, "wb") do |file|
+      file.write(Marshal.dump(@raw_data))
+    end
+  end
+
+  def parse_in_out(raw_data)
+    type, line, station, _, _, date, time, expense, region =
+      raw_data.unpack("nCCCCnnvN")
+    p [type, line, station, date, time, expense, region]
+    case type
+    when 0xA000
+      in_data = true
+      p :in
+    else
+      out_data = true
+      p :out
+    end
+  end
+
+  def parse_history(raw_data)
+    data = raw_data.unpack("CCnnCCCCvN")
+  end
+end
+
+reporter = SuicaTravelingExpenseReporter.new
+exit(reporter.run(ARGV))
