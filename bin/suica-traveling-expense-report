@@ -128,7 +128,8 @@ class SuicaTravelingExpenseReporter
   def parse_in_out(raw_data)
     type, line, station, _, _, date, time, expense, region =
       raw_data.unpack("nCCCCnnvN")
-    p [type, line, station, date, time, expense, region]
+    timestamp = parse_timestamp(date, time)
+    p [type, line, station, date, time, expense, region, timestamp]
     case type
     when 0xA000
       in_data = true
@@ -141,6 +142,15 @@ class SuicaTravelingExpenseReporter
 
   def parse_history(raw_data)
     data = raw_data.unpack("CCnnCCCCvN")
+  end
+
+  def parse_timestamp(raw_date, raw_time)
+    year = (raw_date >> 9) + 2000
+    month = (raw_date >> 5) & 0x0f
+    day = raw_date & 0x1f
+    hour = ("%x" % (raw_time >> 8)).to_i
+    minute = ("%x" % (raw_time & 0xff)).to_i
+    Time.local(year, month, day, hour, minute)
   end
 end
 
