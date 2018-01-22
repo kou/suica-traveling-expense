@@ -140,16 +140,54 @@ class SuicaTravelingExpenseReporter
     end
   end
 
+  TERMINAL_TYPES = {
+    0x03 => "精算機",
+    0x05 => "車載端末",
+    0x07 => "券売機",
+    0x08 => "券売機",
+    0x09 => "入金機",
+    0x12 => "券売機",
+    0x14 => "券売機等",
+    0x15 => "券売機等",
+    0x16 => "改札機",
+    0x17 => "簡易改札機",
+    0x18 => "窓口端末",
+    0x19 => "窓口端末",
+    0x1A => "改札端末",
+    0x1B => "携帯電話",
+    0x1C => "乗継精算機",
+    0x1D => "連絡改札機",
+    0x1F => "簡易入金機",
+    0x23 => "新幹線改札機",
+    0x46 => "VIEW ALTTE",
+    0x48 => "VIEW ALTTE",
+    0xC7 => "物販端末",
+    0xC8 => "自販機",
+  }
+
   def parse_history(raw_data)
-    data = raw_data.unpack("CCnnCCCCvN")
+    terminal, manage_type = raw_data.unpack("CC")
+    terminal_name = TERMINAL_TYPES[terminal]
+
+    case terminal_name
+    when "物販端末", "自販機"
+    when "車載端末"
+    else
+      _, _, _, date, in_line, in_station, out_line, out_station, balance, region_and_number =
+        raw_data.unpack("CCnnCCCCvN")
+      region = (region_and_number >> 4) & 0x0F
+      number = (region_and_number >> 8)
+      timestamp = parse_timestamp(date, 0)
+      p [terminal, manage_type, date, in_line, in_station, out_line, out_station, balance, region, number, timestamp]
+    end
   end
 
   def parse_timestamp(raw_date, raw_time)
     year = (raw_date >> 9) + 2000
-    month = (raw_date >> 5) & 0x0f
-    day = raw_date & 0x1f
+    month = (raw_date >> 5) & 0x0F
+    day = raw_date & 0x1F
     hour = ("%x" % (raw_time >> 8)).to_i
-    minute = ("%x" % (raw_time & 0xff)).to_i
+    minute = ("%x" % (raw_time & 0xFF)).to_i
     Time.local(year, month, day, hour, minute)
   end
 end
