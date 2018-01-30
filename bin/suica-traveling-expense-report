@@ -38,11 +38,68 @@
 #   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
 #   USA.
 
+require "fileutils"
+require "open-uri"
 require "optparse"
+require "pathname"
 
 require "pasori"
 
+require "spreadsheet"
+
 class SuicaTravelingExpenseReporter
+  class Station < Struct.new(:line_code,
+                             :station_code,
+                             :company_name,
+                             :line_name,
+                             :station_name)
+  end
+
+  class StationDatabase
+    def initialize
+      cache_dir_path = Pathname.new("~/.cache/suica-traveling-expense-report")
+      @path = (cache_dir_path + "StationCode.xls").expand_path
+      @suica_stations = {}
+    end
+
+    def load
+      unless @path.exist?
+        FileUtils.mkdir_p(@path.parent.to_s)
+        open("http://www.denno.net/SFCardFan/sendexcel.php") do |input|
+          @path.open("wb") do |output|
+            IO.copy_stream(input, output)
+          end
+        end
+      end
+
+      reader = Spreadsheet::Excel::Reader.new
+      def reader.read_codepage(work, pos, len)
+        @workbook.encoding = encoding(932)
+      end
+      workbook = @path.open("rb") do |input|
+        reader.read(input)
+      end
+      workbook.worksheets.each do |worksheet|
+        case worksheet.name
+        when "Suica系コード"
+          worksheet.each do |row|
+            next if row.idx < 2
+            station = Station.new(row[1].to_i(16),
+                                  row[2].to_i(16),
+                                  row[3],
+                                  row[4],
+                                  row[5])
+            @suica_stations[[station.line_code, station.station_code]] = station
+          end
+        end
+      end
+    end
+
+    def [](line_code, station_code)
+      @suica_stations[[line_code, station_code]]
+    end
+  end
+
   class RawData
     attr_accessor :idm
     attr_reader :in_out
@@ -54,10 +111,53 @@ class SuicaTravelingExpenseReporter
     end
   end
 
+  TERMINAL_TYPES = {
+    0x03 => "精算機",
+    0x05 => "車載端末",
+    0x07 => "券売機",
+    0x08 => "券売機",
+    0x09 => "入金機",
+    0x12 => "券売機",
+    0x14 => "券売機等",
+    0x15 => "券売機等",
+    0x16 => "改札機",
+    0x17 => "簡易改札機",
+    0x18 => "窓口端末",
+    0x19 => "窓口端末",
+    0x1A => "改札端末",
+    0x1B => "携帯電話",
+    0x1C => "乗継精算機",
+    0x1D => "連絡改札機",
+    0x1F => "簡易入金機",
+    0x23 => "新幹線改札機",
+    0x46 => "VIEW ALTTE",
+    0x48 => "VIEW ALTTE",
+    0xC7 => "物販端末",
+    0xC8 => "自販機",
+  }
+
+  class HistoryEntry < Struct.new(:terminal_code,
+                                  :manage_type,
+                                  :in_station,
+                                  :out_station,
+                                  :balance,
+                                  :region,
+                                  :number,
+                                  :timestamp)
+    def terminal
+      TERMINAL_TYPES[terminal_code]
+    end
+  end
+
   def initialize
+    @database = StationDatabase.new
+    @database.load
+
     @raw_data = RawData.new
     @raw_data_output_path = nil
     @raw_data_input_path = nil
+
+    @history = []
   end
 
   def run(argv)
@@ -80,8 +180,8 @@ class SuicaTravelingExpenseReporter
     raw_data.in_out.each do |in_out|
       p [:in_out, in_out, parse_in_out(in_out)]
     end
-    raw_data.history.each do |history|
-      p [:history, history, parse_history(history)]
+    raw_data.history.each do |entry|
+      @history << parse_history_entry(entry)
     end
 
     true
@@ -140,32 +240,7 @@ class SuicaTravelingExpenseReporter
     end
   end
 
-  TERMINAL_TYPES = {
-    0x03 => "精算機",
-    0x05 => "車載端末",
-    0x07 => "券売機",
-    0x08 => "券売機",
-    0x09 => "入金機",
-    0x12 => "券売機",
-    0x14 => "券売機等",
-    0x15 => "券売機等",
-    0x16 => "改札機",
-    0x17 => "簡易改札機",
-    0x18 => "窓口端末",
-    0x19 => "窓口端末",
-    0x1A => "改札端末",
-    0x1B => "携帯電話",
-    0x1C => "乗継精算機",
-    0x1D => "連絡改札機",
-    0x1F => "簡易入金機",
-    0x23 => "新幹線改札機",
-    0x46 => "VIEW ALTTE",
-    0x48 => "VIEW ALTTE",
-    0xC7 => "物販端末",
-    0xC8 => "自販機",
-  }
-
-  def parse_history(raw_data)
+  def parse_history_entry(raw_data)
     terminal, manage_type = raw_data.unpack("CC")
     terminal_name = TERMINAL_TYPES[terminal]
 
@@ -178,7 +253,14 @@ class SuicaTravelingExpenseReporter
       region = (region_and_number >> 4) & 0x0F
       number = (region_and_number >> 8)
       timestamp = parse_timestamp(date, 0)
-      p [terminal, manage_type, date, in_line, in_station, out_line, out_station, balance, region, number, timestamp]
+      HistoryEntry.new(terminal,
+                       manage_type,
+                       @database[in_line, in_station],
+                       @database[out_line, out_station],
+                       balance,
+                       region,
+                       number,
+                       timestamp)
     end
   end
 
