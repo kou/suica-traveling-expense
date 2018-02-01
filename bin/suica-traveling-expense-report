@@ -38,6 +38,7 @@
 #   Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
 #   USA.
 
+require "csv"
 require "fileutils"
 require "open-uri"
 require "optparse"
@@ -53,6 +54,9 @@ class SuicaTravelingExpenseReporter
                              :company_name,
                              :line_name,
                              :station_name)
+    def name
+      "#{company_name}: #{line_name}: #{station_name}"
+    end
   end
 
   class StationDatabase
@@ -102,8 +106,8 @@ class SuicaTravelingExpenseReporter
 
   class RawData
     attr_accessor :idm
-    attr_reader :in_out
-    attr_reader :history
+    attr_accessor :in_out
+    attr_accessor :history
     def initialize
       @idm = nil
       @in_out = []
@@ -136,6 +140,34 @@ class SuicaTravelingExpenseReporter
     0xC8 => "自販機",
   }
 
+  EXPENSE_TYPES = {
+    0x01 => "改札出場",
+    0x02 => "チャージ",
+    0x03 => "磁気券購入",
+    0x04 => "精算",
+    0x05 => "入場精算",
+    0x06 => "改札窓口処理",
+    0x07 => "新規発行",
+    0x08 => "窓口控除",
+    0x0d => "バス",
+    0x0f => "バス",
+    0x11 => "再発行処理",
+    0x13 => "支払(新幹線利用)",
+    0x14 => "入場時オートチャージ",
+    0x15 => "出場時オートチャージ",
+    0x1f => "バスチャージ",
+    0x23 => "バス路面電車企画券購入",
+    0x46 => "物販",
+    0x48 => "特典チャージ",
+    0x49 => "レジ入金",
+    0x4a => "物販取消",
+    0x4b => "入場物販",
+    0xc6 => "現金併用物販",
+    0xcb => "入場現金併用物販",
+    0x84 => "他社精算",
+    0x85 => "他社入場精算",
+  }
+
   class HistoryEntry < Struct.new(:terminal_code,
                                   :manage_type,
                                   :in_station,
@@ -147,6 +179,14 @@ class SuicaTravelingExpenseReporter
     def terminal
       TERMINAL_TYPES[terminal_code]
     end
+
+    def expense
+      EXPENSE_TYPES[manage_type]
+    end
+
+    def auto_charge?
+      expense.end_with?("オートチャージ")
+    end
   end
 
   def initialize
@@ -155,7 +195,6 @@ class SuicaTravelingExpenseReporter
 
     @raw_data = RawData.new
     @raw_data_output_path = nil
-    @raw_data_input_path = nil
 
     @history = []
   end
@@ -166,11 +205,7 @@ class SuicaTravelingExpenseReporter
               "Output raw data to PATH") do |path|
       @raw_data_output_path = path
     end
-    parser.on("--input-raw-data=PATH",
-              "Read raw data from PATH") do |path|
-      @raw_data_input_path = path
-    end
-    parser.parse!(argv)
+    @raw_data_input_paths = parser.parse!(argv)
 
     report
   end
@@ -178,10 +213,54 @@ class SuicaTravelingExpenseReporter
   def report
     raw_data = read_raw_data
     raw_data.in_out.each do |in_out|
-      p [:in_out, in_out, parse_in_out(in_out)]
+      # p [:in_out, in_out, parse_in_out(in_out)]
     end
+
+    csv = CSV.new($stdout)
+    csv << [
+      "date",
+      "from",
+      "to",
+      "destination",
+      "fee",
+    ]
     raw_data.history.each do |entry|
       @history << parse_history_entry(entry)
+    end
+    sorted_history = @history.sort_by do |entry|
+      entry.number
+    end
+    current_balance = nil
+    timestamp = nil
+    in_station = nil
+    fee = 0
+    sorted_history.each do |entry|
+      # p [entry.timestamp, entry.balance, entry.terminal, entry.expense, entry.in_station.name, entry.out_station.name]
+      if current_balance.nil? or entry.auto_charge?
+        current_balance = entry.balance
+        next
+      end
+
+      fee += current_balance - entry.balance
+      case entry.terminal
+      when "連絡改札機"
+        timestamp = entry.timestamp
+        in_station = entry.in_station
+      else
+        timestamp ||= entry.timestamp
+        in_station ||= entry.in_station
+        csv << [
+          timestamp.strftime("%Y-%m-%d"),
+          in_station.station_name,
+          entry.out_station.station_name,
+          nil,
+          fee,
+        ]
+        timestamp = nil
+        in_station = nil
+        fee = 0
+      end
+      current_balance = entry.balance
     end
 
     true
@@ -189,7 +268,7 @@ class SuicaTravelingExpenseReporter
 
   private
   def read_raw_data
-    if @raw_data_input_path.nil?
+    if @raw_data_input_paths.empty?
       Pasori.open do |pasori|
         felica = pasori.felica_polling(Felica::POLLING_SUICA)
         if felica.nil?
@@ -207,10 +286,18 @@ class SuicaTravelingExpenseReporter
         end
 
         save_raw_data
+
+        @raw_data.in_out.reverse!
+        @raw_data.history.reverse!
       end
     else
-      File.open(@raw_data_input_path, "rb") do |file|
-        @raw_data = Marshal.load(file)
+      @raw_data_input_paths.sort.each do |path|
+        File.open(path, "rb") do |file|
+          raw_data = Marshal.load(file)
+          @raw_data.idm ||= raw_data.idm
+          @raw_data.in_out |= raw_data.in_out.reverse
+          @raw_data.history |= raw_data.history.reverse
+        end
       end
     end
 
