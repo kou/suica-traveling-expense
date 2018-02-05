@@ -215,6 +215,15 @@ class SuicaTravelingExpenseReporter
               "Set to date to DATE") do |date|
       @to_date = date
     end
+    parser.on("--month=YYYY-MM", /\A\d{4}-\d{2}\z/,
+              "Set target month") do |month|
+      @from_date = Date.parse("#{month}-01")
+      if @from_date.month == 12
+        @to_date = Date.new(@from_date.year + 1, 1, 1) - 1
+      else
+        @to_date = Date.new(@from_date.year, @from_date.month + 1, 1) - 1
+      end
+    end
     @raw_data_input_paths = parser.parse!(argv)
 
     report
