@@ -50,7 +50,8 @@ require "pasori"
 require "spreadsheet"
 
 class SuicaTravelingExpenseReporter
-  class Station < Struct.new(:line_code,
+  class Station < Struct.new(:region_code,
+                             :line_code,
                              :station_code,
                              :company_name,
                              :line_name,
@@ -89,19 +90,26 @@ class SuicaTravelingExpenseReporter
         when "Suica系コード"
           worksheet.each do |row|
             next if row.idx < 2
-            station = Station.new(row[1].to_i(16),
-                                  row[2].to_i(16),
+            station = Station.new(Integer(row[0], 10),
+                                  Integer(row[1], 16),
+                                  Integer(row[2], 16),
                                   row[3],
                                   row[4],
                                   row[5])
-            @suica_stations[[station.line_code, station.station_code]] = station
+            station_key = [
+              station.region_code,
+              station.line_code,
+              station.station_code,
+            ]
+            @suica_stations[station_key] ||= station
           end
         end
       end
     end
 
-    def [](line_code, station_code)
-      @suica_stations[[line_code, station_code]]
+    def [](region_code, line_code, station_code)
+      station_key = [region_code, line_code, station_code]
+      @suica_stations[station_key]
     end
   end
 
@@ -370,8 +378,8 @@ class SuicaTravelingExpenseReporter
       timestamp = parse_timestamp(date, 0)
       HistoryEntry.new(terminal,
                        manage_type,
-                       @database[in_line, in_station],
-                       @database[out_line, out_station],
+                       @database[region, in_line, in_station],
+                       @database[region, out_line, out_station],
                        balance,
                        region,
                        number,
