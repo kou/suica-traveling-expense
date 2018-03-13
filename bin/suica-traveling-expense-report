@@ -280,8 +280,8 @@ class SuicaTravelingExpenseReporter
       fee += current_balance - entry.balance
       case entry.terminal
       when "連絡改札機"
-        timestamp = entry.timestamp
-        in_station = entry.in_station
+        timestamp ||= entry.timestamp
+        in_station ||= entry.in_station
       else
         timestamp ||= entry.timestamp
         in_station ||= entry.in_station
